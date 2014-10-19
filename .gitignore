@@ -1,0 +1,4 @@
+*.conf
+*.pyc
+__pycache__
+mountpoint
