@@ -55,6 +55,14 @@ class PathResolver(object):
         return dict(st_mode=(S_IFDIR | 0o755), st_ctime=time(),
                     st_mtime=time(), st_atime=time(), st_nlink=1)
 
+    @recursive
+    def mkdir(self, parts, mode):
+        raise FuseOSError(EPERM)
+
+    @recursive
+    def rename(self, parts, new_parts):
+        raise FuseOSError(EPERM)
+
 
 class FileResolver(PathResolver):
     def __init__(self, name, vk):
@@ -79,8 +87,9 @@ class RootPathResolver(PathResolver):
         self.struct.update({
             '': self,
             'profile': ProfileFileResolver('profile', vk),
-            'MyAudio': MyAudioResolver('MyAudio', vk),
-            'RecommendedAudio': RecommendationsAudioResolver('RecommendedAudio', vk)
+            # 'MyAudio': MyAudioResolver('MyAudio', vk),
+            # 'RecommendedAudio': RecommendationsAudioResolver('RecommendedAudio', vk),
+            'Audio': AudioQueryFolderResolver('Audio', vk),
         })
 
     @recursive
@@ -117,6 +126,15 @@ class FuseDelegate(LoggingMixIn, Operations):
     def read(self, path, size, offset, fh):
         parts = path.split('/')
         return self.resolver.read(parts, size, offset, fh) # self.data[path][offset:offset + size]
+
+    def mkdir(self, path, mode):
+        parts = path.split('/')
+        return self.resolver.mkdir(parts, mode)
+
+    def rename(self, path, new_path):
+        parts = path.split('/')
+        new_parts = new_path.split('/')
+        return self.resolver.rename(parts, new_parts)
 
 ## / FILESYSTEM CORE /
 
@@ -169,9 +187,9 @@ class AudioResolver(PathResolver):
         audio = self.audios()[name]
         if 'size' not in audio:
             print('retrieving size of %s' % name)
-            audio["size"] = 1000*1024*1024
-            # with urllib.request.urlopen(audio['url']) as request:
-            #     audio['size'] = int(request.info()['Content-Length'])
+            # audio["size"] = 1000*20*1024
+            with urllib.request.urlopen(audio['url']) as request:
+                audio['size'] = int(request.info()['Content-Length'])
         return audio['size']
 
     def read(self, parts, size, offset, fh):
@@ -198,8 +216,6 @@ class AudioResolver(PathResolver):
         self._files[fh] = {"content": b'', "request": request}
 
     def release(self, parts, fh):
-        # if fh in self._files:
-        #     del self._files[fh]
         pass
 
 
@@ -217,6 +233,48 @@ class RecommendationsAudioResolver(AudioResolver):
             self._audios = {"{}-{}-{}.mp3".format(audio['artist'], audio['title'], audio['id']):audio
                             for audio in self.vk.recommended_audio_files()}
         return self._audios
+
+class CustomAudioResolver(AudioResolver):
+    def audios(self):
+        if not self._audios:
+            self._audios = {"{}-{}-{}.mp3".format(audio['artist'], audio['title'], audio['id']):audio
+                            for audio in self.vk.search_audio_files(self.name)}
+        return self._audios
+
+
+class AudioQueryFolderResolver(PathResolver):
+    def __init__(self, name, vk):
+        super().__init__(name, vk)
+
+    def mkdir(self, parts, mode=None):
+        if len(parts) == 2:
+            if parts[0] == self.name:
+                print("CREATING QUERY %s" % parts[1])
+                self.struct[parts[1]] = CustomAudioResolver(parts[1], self.vk)
+            else:
+                raise FuseOSError(ENOENT)
+        else:
+            raise FuseOSError(EPERM)
+
+    def rename(self, parts, new_parts):
+        if len(parts) == 2:
+            if parts[0] == self.name and new_parts[-2:][0] == self.name:
+                print("RENAMING")
+                self.rmdir(parts)
+                self.mkdir(new_parts[-2:])
+            else:
+                raise FuseOSError(ENOENT)
+        else:
+            raise FuseOSError(EPERM)
+
+    def rmdir(self, parts):
+        if len(parts) == 2:
+            if parts[0] == self.name and parts[1] in self.struct:
+                del self.struct[parts[-1]]
+            else:
+                raise FuseOSError(ENOENT)
+        else:
+            raise FuseOSError(EPERM)
 
 
 class FuseController(object):

@@ -17,3 +17,7 @@ class VKDelegate(object):
 
     def recommended_audio_files(self):
         return self.vkapi.audio.getRecommendations()['items']
+
+    def search_audio_files(self, query):
+        print("VK: search %s" % query)
+        return self.vkapi.audio.search(q=query, performer_only=1)['items']
