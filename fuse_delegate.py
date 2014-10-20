@@ -1,7 +1,7 @@
 from fuse import FUSE, FuseOSError, Operations, LoggingMixIn
 
 from stat import S_IFDIR, S_IFLNK, S_IFREG
-from errno import ENOENT
+from errno import ENOENT, EPERM
 from time import time
 import urllib
 
@@ -41,6 +41,14 @@ class PathResolver(object):
     @recursive
     def read(self, parts, size, offset, fh):
         raise FuseOSError(EPERM)
+
+    @recursive
+    def release(self, parts, fh):
+        pass
+
+    @recursive
+    def open(self, parts, fh):
+        pass
 
     @recursive
     def getattr(self, parts):
@@ -96,7 +104,14 @@ class FuseDelegate(LoggingMixIn, Operations):
 
     def open(self, path, flags):
         self.fd += 1
+        parts = path.split('/')
+        self.resolver.open(parts, self.fd)
         return self.fd
+
+    def release(self, path, fh):
+        print("RELEASE ",fh)
+        parts = path.split('/')
+        self.resolver.release(parts, fh)
 
     def read(self, path, size, offset, fh):
         parts = path.split('/')
@@ -124,13 +139,17 @@ class MyAudioResolver(PathResolver):
     def __init__(self, name, vk):
         super().__init__(name, vk)
         self._audios = None
+        self._files = {}
 
     @recursive
     def ls(self, parts):
+        return list(self.audios().keys())
+
+    def audios(self):
         if not self._audios:
             self._audios = {"{}-{}-{}.mp3".format(audio['artist'], audio['title'], audio['id']):audio
                             for audio in self.vk.my_audio_files()}
-        return list(self._audios.keys())
+        return self._audios
 
     def getattr(self, parts):
         if len(parts) == 1:
@@ -140,7 +159,7 @@ class MyAudioResolver(PathResolver):
             else:
                 raise FuseOSError(ENOENT)
         else:
-            if parts[1] in self._audios:
+            if parts[1] in self.audios():
                 size = self.get_size(parts[1])
                 return dict(st_mode=(S_IFREG | 0o755), st_ctime=time(),
                             st_mtime=time(), st_atime=time(), st_nlink=1,
@@ -149,11 +168,39 @@ class MyAudioResolver(PathResolver):
                 raise FuseOSError(ENOENT)
 
     def get_size(self, name):
-        audio = self._audios[name]
+        audio = self.audios()[name]
         if 'size' not in audio:
             print('retrieving size of %s' % name)
-            audio['size'] = int(urllib.request.urlopen(audio['url']).info()['Content-Length'])
+            audio["size"] = 1000*1024*1024
+            # with urllib.request.urlopen(audio['url']) as request:
+            #     audio['size'] = int(request.info()['Content-Length'])
         return audio['size']
+
+    def read(self, parts, size, offset, fh):
+        print("READ",size,offset)
+        audio = self.audios()[parts[1]]
+        request = self._files[fh]["request"]
+        while len(self._files[fh]["content"]) < offset + size:
+            read_ = request.read(1000*1024)
+            if not read_:
+                break
+            print("chunk loaded")
+            self._files[fh]["content"] += read_
+
+        data = self._files[fh]["content"]
+        return data[offset:offset + size]
+
+    def open(self, parts, fh):
+        print("OPEN",parts[1])
+        audio = self.audios()[parts[1]]
+        if fh not in self._files:
+            request = urllib.request.urlopen(audio['url'])
+            self._audios[parts[1]]['size'] = int(request.info()['Content-Length'])
+            self._files[fh] = {"content": b'', "request": request}
+
+    def release(self, parts, fh):
+        if fh in self._files:
+            del self._files[fh]
 
 
 class FuseController(object):
