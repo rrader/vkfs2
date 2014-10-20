@@ -14,3 +14,6 @@ class VKDelegate(object):
 
     def my_audio_files(self):
         return self.vkapi.audio.get()['items']
+
+    def recommended_audio_files(self):
+        return self.vkapi.audio.getRecommendations()['items']

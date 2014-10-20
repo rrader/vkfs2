@@ -1,7 +1,7 @@
 from fuse import FUSE, FuseOSError, Operations, LoggingMixIn
 
 from stat import S_IFDIR, S_IFLNK, S_IFREG
-from errno import ENOENT, EPERM
+from errno import ENOENT, EPERM, EIO
 from time import time
 import urllib
 
@@ -79,7 +79,8 @@ class RootPathResolver(PathResolver):
         self.struct.update({
             '': self,
             'profile': ProfileFileResolver('profile', vk),
-            'MyAudio': MyAudioResolver('MyAudio', vk)
+            'MyAudio': MyAudioResolver('MyAudio', vk),
+            'RecommendedAudio': RecommendationsAudioResolver('RecommendedAudio', vk)
         })
 
     @recursive
@@ -135,7 +136,7 @@ class ProfileFileResolver(FileResolver):
         return self._content
 
 
-class MyAudioResolver(PathResolver):
+class AudioResolver(PathResolver):
     def __init__(self, name, vk):
         super().__init__(name, vk)
         self._audios = None
@@ -146,10 +147,7 @@ class MyAudioResolver(PathResolver):
         return list(self.audios().keys())
 
     def audios(self):
-        if not self._audios:
-            self._audios = {"{}-{}-{}.mp3".format(audio['artist'], audio['title'], audio['id']):audio
-                            for audio in self.vk.my_audio_files()}
-        return self._audios
+        raise NotImplemented()
 
     def getattr(self, parts):
         if len(parts) == 1:
@@ -178,6 +176,8 @@ class MyAudioResolver(PathResolver):
 
     def read(self, parts, size, offset, fh):
         print("READ",size,offset)
+        if fh not in self._files:
+            raise FuseOSError(EIO)
         audio = self.audios()[parts[1]]
         request = self._files[fh]["request"]
         while len(self._files[fh]["content"]) < offset + size:
@@ -191,16 +191,32 @@ class MyAudioResolver(PathResolver):
         return data[offset:offset + size]
 
     def open(self, parts, fh):
-        print("OPEN",parts[1])
+        print("OPEN",fh,parts[1])
         audio = self.audios()[parts[1]]
-        if fh not in self._files:
-            request = urllib.request.urlopen(audio['url'])
-            self._audios[parts[1]]['size'] = int(request.info()['Content-Length'])
-            self._files[fh] = {"content": b'', "request": request}
+        request = urllib.request.urlopen(audio['url'])
+        self._audios[parts[1]]['size'] = int(request.info()['Content-Length'])
+        self._files[fh] = {"content": b'', "request": request}
 
     def release(self, parts, fh):
-        if fh in self._files:
-            del self._files[fh]
+        # if fh in self._files:
+        #     del self._files[fh]
+        pass
+
+
+class MyAudioResolver(AudioResolver):
+    def audios(self):
+        if not self._audios:
+            self._audios = {"{}-{}-{}.mp3".format(audio['artist'], audio['title'], audio['id']):audio
+                            for audio in self.vk.my_audio_files()}
+        return self._audios
+
+
+class RecommendationsAudioResolver(AudioResolver):
+    def audios(self):
+        if not self._audios:
+            self._audios = {"{}-{}-{}.mp3".format(audio['artist'], audio['title'], audio['id']):audio
+                            for audio in self.vk.recommended_audio_files()}
+        return self._audios
 
 
 class FuseController(object):
